@@ -76,7 +76,7 @@ function groupGrnRows(rows: Record<string, unknown>[], orgId: string) {
       grn_number: base["grn_number"] as string,
       po_number: (base["po_number"] as string) || null,
       vendor_name: (base["vendor_name"] as string) || null,
-      total_received_amount: null as number | null,
+      total_received_amount: (base["total_received_amount"] as number | null) ?? null,
       line_items: items.length > 0 ? items : null,
       received_at,
     };

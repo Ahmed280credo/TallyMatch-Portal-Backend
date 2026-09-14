@@ -109,14 +109,22 @@ export function runThreeWayMatch(
     checks.grn_found_for_po = { pass: true, detail: `Found GRN ${grn.grn_number}` };
   }
 
-  // ── 4-6 only run when BOTH PO and GRN are found ─────────────────────────
+  // ── Checks 4-6 only run when BOTH PO and GRN are found ──────────────────
   if (po && grn) {
     // ── 4. Total amount match (≤1 PKR tolerance for floating point) ──────────
     // Supabase returns numeric columns as strings at runtime — coerce both sides
     const poTotal = po.total_amount == null ? null : Number(po.total_amount);
     if (poTotal == null || isNaN(poTotal)) {
-      // PO has no total set — skip the check, don't flag as mismatch
-      checks.total_amount_match = { pass: true, detail: "Skipped — PO has no total_amount recorded" };
+      // A PO with no recorded amount can't confirm the invoiced value either —
+      // same treatment as a GRN with no amount below: pending (needs review),
+      // not a silent pass.
+      pendingReasons.push(
+        `PO ${po.po_number} has no total_amount recorded — cannot confirm invoiced value`
+      );
+      checks.total_amount_match = {
+        pass: false,
+        detail: `PO ${po.po_number} has no total_amount recorded`,
+      };
     } else if (Math.abs(invoice.total_amount - poTotal) > 1) {
       mismatchReasons.push(
         `Amount mismatch: Invoice PKR ${invoice.total_amount} vs PO PKR ${poTotal}`
@@ -130,6 +138,9 @@ export function runThreeWayMatch(
     }
 
     // ── 5. Unit price per line item exact match (invoice vs PO) ────────────
+    // GRN carries no pricing — it only confirms physical receipt — so it never
+    // participates in an amount/price comparison. Amount checks are PO vs
+    // Invoice only (total_amount_match above, unit prices below).
     if ((po.line_items?.length ?? 0) > 0 && invoice.line_items.length > 0) {
       const unitPriceFailures: string[] = [];
 
@@ -156,7 +167,7 @@ export function runThreeWayMatch(
       }
     }
 
-    // ── 6. Quantity: invoice qty must not exceed GRN qty received ──────────
+    // ── 6. Quantity: invoice qty must equal GRN qty received (either direction) ─
     if ((grn.line_items?.length ?? 0) > 0 && invoice.line_items.length > 0) {
       const qtyFailures: string[] = [];
 
@@ -173,7 +184,11 @@ export function runThreeWayMatch(
 
         if (invQty > grnQty) {
           qtyFailures.push(
-            `"${invItem.description}": Invoiced ${invQty} but only ${grnQty} received per GRN`
+            `"${invItem.description}": Invoiced ${invQty} but only ${grnQty} received per GRN (over-billing)`
+          );
+        } else if (invQty < grnQty) {
+          qtyFailures.push(
+            `"${invItem.description}": Invoiced ${invQty} but ${grnQty} received per GRN (under-billing — invoice may be incomplete)`
           );
         }
       }

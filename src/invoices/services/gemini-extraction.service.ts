@@ -4,6 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 import {
   extractionPrompt,
   InvoiceExtractionSchema,
+  invoiceExtractionResponseSchema,
   type ExtractedInvoice
 } from "../schemas/invoice-extraction.schema.js";
 
@@ -41,6 +42,7 @@ export class GeminiExtractionService {
       ],
       config: {
         responseMimeType: "application/json",
+        responseSchema: invoiceExtractionResponseSchema,
         temperature: 0
       }
     });
@@ -68,6 +70,7 @@ export class GeminiExtractionService {
       ],
       config: {
         responseMimeType: "application/json",
+        responseSchema: invoiceExtractionResponseSchema,
         temperature: 0
       }
     });

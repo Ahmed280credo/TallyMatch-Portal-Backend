@@ -13,14 +13,9 @@ import { memoryStorage } from "multer";
 import { SupabaseAuthGuard } from "../auth/supabase-auth.guard.js";
 import { OrgId } from "../common/decorators/org-id.decorator.js";
 import { CsvParserService } from "./csv-parser.service.js";
-import { CsvTransformerService } from "./csv-transformer.service.js";
+import { CsvTransformerService, MissingColumnsError } from "./csv-transformer.service.js";
 import { ImportService } from "./import.service.js";
-import {
-  GRN_COLUMN_MAPPING,
-  GRN_REQUIRED_FIELDS,
-  PO_COLUMN_MAPPING,
-  PO_REQUIRED_FIELDS,
-} from "./column-mapping.config.js";
+import { GRN_FIELDS, PO_FIELDS } from "./column-mapping.config.js";
 
 const csvFileInterceptor = FileInterceptor("file", {
   storage: memoryStorage(),
@@ -45,7 +40,7 @@ export class ImportController {
   ) {
     this.assertValid(orgId, file);
     const raw = this.parser.parse(file!.buffer);
-    const { rows, skipped } = this.transformer.transform(raw, PO_COLUMN_MAPPING, PO_REQUIRED_FIELDS);
+    const { rows, skipped } = this.transform(raw, PO_FIELDS);
     return this.importService.importPurchaseOrders(orgId!, rows, skipped);
   }
 
@@ -58,8 +53,19 @@ export class ImportController {
   ) {
     this.assertValid(orgId, file);
     const raw = this.parser.parse(file!.buffer);
-    const { rows, skipped } = this.transformer.transform(raw, GRN_COLUMN_MAPPING, GRN_REQUIRED_FIELDS);
+    const { rows, skipped } = this.transform(raw, GRN_FIELDS);
     return this.importService.importGoodsReceiptNotes(orgId!, rows, skipped);
+  }
+
+  private transform(raw: Record<string, string>[], fields: Parameters<CsvTransformerService["transform"]>[1]) {
+    try {
+      return this.transformer.transform(raw, fields);
+    } catch (err) {
+      if (err instanceof MissingColumnsError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
   }
 
   private assertValid(orgId: string | undefined, file: Express.Multer.File | undefined) {

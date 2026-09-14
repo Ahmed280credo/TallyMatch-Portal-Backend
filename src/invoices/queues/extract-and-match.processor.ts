@@ -85,7 +85,10 @@ export class ExtractAndMatchProcessor extends WorkerHost {
         line_items: extracted.line_items,
         fbr_status: fbr.status,
         source_file_name: data.sourceFileName,
-        status: "extracted"
+        status: "extracted",
+        vendor_bank_name: extracted.vendor_bank_name ?? null,
+        vendor_account_number: extracted.vendor_account_number ?? null,
+        vendor_iban: extracted.vendor_iban ?? null
       });
 
       const match = await this.matcher.matchInvoice(orgId, extracted);

@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Request } from "express";
 import { SUPABASE_CLIENT } from "../database/supabase.client.js";
@@ -17,6 +17,22 @@ export class SupabaseAuthGuard implements CanActivate {
     if (error || !data.user) throw new UnauthorizedException("Invalid or expired token");
 
     (req as any).user = data.user;
+
+    const rawOrgId = (req.headers["x-org-id"] as string | undefined)?.trim();
+    if (rawOrgId && rawOrgId.length >= 8) {
+      const { data: member, error: memberErr } = await this.supabase
+        .from("organization_members")
+        .select("id, role")
+        .eq("org_id", rawOrgId)
+        .eq("user_id", data.user.id)
+        .maybeSingle();
+
+      if (memberErr || !member) {
+        throw new ForbiddenException(`Forbidden: Authenticated user does not belong to organization '${rawOrgId}'`);
+      }
+      (req as any).orgMember = member;
+    }
+
     return true;
   }
 }
