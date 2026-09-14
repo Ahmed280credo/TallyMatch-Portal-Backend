@@ -12,6 +12,7 @@ import { AppModule } from "./app.module.js";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.setGlobalPrefix("api");
   const config = app.get(ConfigService);
   const port = config.getOrThrow<number>("PORT");
   const corsOrigin = config.getOrThrow<string>("CORS_ORIGIN");
