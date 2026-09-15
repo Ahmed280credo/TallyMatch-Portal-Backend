@@ -37,7 +37,9 @@ function po(overrides: Partial<PurchaseOrder> = {}): PurchaseOrder {
     org_id: "org-1",
     po_number: "PO-1001",
     vendor_name: "Acme Traders",
-    total_amount: 528000,
+    // PO amounts are pre-tax — matches invoice's subtotal (500000), not its
+    // tax-inclusive total_amount (528000).
+    total_amount: 500000,
     currency: "PKR",
     line_items: [
       { description: "Steel Rods 12mm", unit_price: 4000, amount: 400000 },
@@ -108,12 +110,52 @@ async function runTests() {
     check("5. PO total_amount null → pending", result.status === "pending", result);
   }
 
-  // 6. Invoice total doesn't match PO total (PO vs Invoice amount check — unchanged)
+  // 6. Invoice subtotal (pre-tax) doesn't match PO total
   {
-    const result = runThreeWayMatch(invoice({ total_amount: 999999 }), [po()], [grn()]);
+    const result = runThreeWayMatch(invoice({ subtotal: 999999 }), [po()], [grn()]);
     check(
-      "6. Invoice total ≠ PO total → mismatch",
+      "6. Invoice subtotal ≠ PO total → mismatch",
       result.status === "mismatch" && result.mismatch_reasons.some((r) => r.includes("PO PKR")),
+      result
+    );
+  }
+
+  // 6b. NEW: invoice total_amount (tax-inclusive, 528000) differs from PO
+  //     (500000, pre-tax) by exactly the tax amount — must NOT be flagged,
+  //     since the comparison is subtotal vs PO, not total_amount vs PO.
+  {
+    const result = runThreeWayMatch(invoice(), [po()], [grn()]);
+    check(
+      "6b. Tax-inclusive total ≠ PO but pre-tax subtotal matches → approved (no false mismatch)",
+      result.status === "approved",
+      result
+    );
+  }
+
+  // 6c. subtotal missing → falls back to total_amount - tax_amount
+  {
+    const result = runThreeWayMatch(
+      invoice({ subtotal: null, tax_amount: 28000, total_amount: 528000 }),
+      [po()],
+      [grn()]
+    );
+    check(
+      "6c. Missing subtotal falls back to total_amount - tax_amount (528000-28000=500000=PO) → approved",
+      result.status === "approved",
+      result
+    );
+  }
+
+  // 6d. subtotal and tax_amount both missing → falls back to raw total_amount
+  {
+    const result = runThreeWayMatch(
+      invoice({ subtotal: null, tax_amount: null, total_amount: 500000 }),
+      [po()],
+      [grn()]
+    );
+    check(
+      "6d. Missing subtotal and tax_amount falls back to total_amount (500000=PO) → approved",
+      result.status === "approved",
       result
     );
   }

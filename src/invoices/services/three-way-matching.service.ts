@@ -138,6 +138,17 @@ export function runThreeWayMatch(
   // ── Checks 4-6 only run when BOTH PO and at least one GRN are found ────────
   if (po && grns.length > 0) {
     // ── 4. Total amount match (≤1 PKR tolerance for floating point) ──────────
+    // PO amounts are recorded pre-tax, so compare against the invoice's pre-tax
+    // subtotal — not its tax-inclusive total_amount — or every invoice with tax
+    // would mismatch by exactly the tax amount. Fall back to total_amount minus
+    // tax_amount, then to total_amount itself, if subtotal wasn't extracted.
+    const invoiceNetAmount =
+      invoice.subtotal != null
+        ? invoice.subtotal
+        : invoice.tax_amount != null
+          ? invoice.total_amount - invoice.tax_amount
+          : invoice.total_amount;
+
     // Supabase returns numeric columns as strings at runtime — coerce both sides
     const poTotal = po.total_amount == null ? null : Number(po.total_amount);
     if (poTotal == null || isNaN(poTotal)) {
@@ -151,16 +162,16 @@ export function runThreeWayMatch(
         pass: false,
         detail: `PO ${po.po_number} has no total_amount recorded`,
       };
-    } else if (Math.abs(invoice.total_amount - poTotal) > 1) {
+    } else if (Math.abs(invoiceNetAmount - poTotal) > 1) {
       mismatchReasons.push(
-        `Amount mismatch: Invoice PKR ${invoice.total_amount} vs PO PKR ${poTotal}`
+        `Amount mismatch: Invoice subtotal PKR ${invoiceNetAmount} vs PO PKR ${poTotal}`
       );
       checks.total_amount_match = {
         pass: false,
-        detail: `Invoice ${invoice.total_amount} ≠ PO ${poTotal}`,
+        detail: `Invoice subtotal ${invoiceNetAmount} ≠ PO ${poTotal}`,
       };
     } else {
-      checks.total_amount_match = { pass: true, detail: `Both PKR ${invoice.total_amount}` };
+      checks.total_amount_match = { pass: true, detail: `Both PKR ${invoiceNetAmount}` };
     }
 
     // ── 5. Unit price per line item exact match (invoice vs PO) ────────────
