@@ -189,6 +189,48 @@ async function runTests() {
     );
   }
 
+  // 12. Multiple GRNs against the same PO (partial/staggered deliveries) —
+  //     quantities must be summed across all of them, not just the first found.
+  {
+    const result = runThreeWayMatch(
+      invoice(),
+      [po()],
+      [
+        grn({ id: "grn-1", grn_number: "GRN-5001", line_items: [{ description: "Steel Rods 12mm", quantity: 60, amount: 0 }] }),
+        grn({ id: "grn-2", grn_number: "GRN-5002", line_items: [{ description: "Steel Rods 12mm", quantity: 40, amount: 0 }, { description: "Steel Plates", quantity: 32, amount: 0 }] }),
+      ]
+    );
+    check(
+      "12. Multiple GRNs for one PO are all found",
+      result.match_result.checks.grn_found_for_po.pass &&
+        (result.match_result.checks.grn_found_for_po.detail ?? "").includes("2 GRNs"),
+      result
+    );
+    check(
+      "12b. Quantities summed across GRNs (60+40=100) → approved, no mismatch",
+      result.status === "approved",
+      result
+    );
+  }
+
+  // 13. Multiple GRNs whose summed quantity still doesn't cover the invoice
+  //     must be flagged — proves the sum, not just presence, is checked.
+  {
+    const result = runThreeWayMatch(
+      invoice(),
+      [po()],
+      [
+        grn({ id: "grn-1", grn_number: "GRN-5001", line_items: [{ description: "Steel Rods 12mm", quantity: 30, amount: 0 }, { description: "Steel Plates", quantity: 32, amount: 0 }] }),
+        grn({ id: "grn-2", grn_number: "GRN-5002", line_items: [{ description: "Steel Rods 12mm", quantity: 20, amount: 0 }] }),
+      ]
+    );
+    check(
+      "13. Summed GRN qty (30+20=50) still short of invoiced 100 → mismatch, over-billing",
+      result.status === "mismatch" && result.mismatch_reasons.some((r) => r.includes("over-billing")),
+      result
+    );
+  }
+
   console.log(failures === 0 ? "\nALL THREE-WAY MATCH TEST SCENARIOS PASSED! 🎉" : `\n${failures} SCENARIO(S) FAILED`);
   if (failures > 0) process.exitCode = 1;
 }

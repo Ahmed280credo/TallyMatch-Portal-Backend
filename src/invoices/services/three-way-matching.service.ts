@@ -47,6 +47,27 @@ function findLineItem(
   return items.find((d) => normalizeKey(d.description) === invDesc);
 }
 
+// A single PO is commonly received across multiple GRNs (partial/staggered
+// deliveries). Combine every GRN linked to the PO into one line-item list,
+// summing received quantities per item, so matching reflects total receipts
+// instead of whichever single GRN happened to be found first.
+function combineGrnLineItems(grns: GoodsReceiptNote[]): InvoiceLineItem[] {
+  const combined: InvoiceLineItem[] = [];
+
+  for (const g of grns) {
+    for (const item of g.line_items ?? []) {
+      const existing = findLineItem(item, combined);
+      if (existing) {
+        existing.quantity = Number(existing.quantity ?? 0) + Number(item.quantity ?? 0);
+      } else {
+        combined.push({ ...item, quantity: item.quantity == null ? null : Number(item.quantity) });
+      }
+    }
+  }
+
+  return combined;
+}
+
 export function runThreeWayMatch(
   invoice: ExtractedInvoice,
   purchaseOrders: PurchaseOrder[],
@@ -93,12 +114,11 @@ export function runThreeWayMatch(
     checks.po_found_in_system = { pass: true, detail: `Found PO ${po.po_number}` };
   }
 
-  // ── 3. GRN exists linked to that PO ─────────────────────────────────────
-  const grn = po
-    ? goodsReceiptNotes.find((g) => g.po_number === po.po_number)
-    : undefined;
+  // ── 3. GRN(s) exist linked to that PO — a PO can be received across ────────
+  //      multiple GRNs (partial/staggered deliveries), so collect all of them.
+  const grns = po ? goodsReceiptNotes.filter((g) => g.po_number === po.po_number) : [];
 
-  if (!grn) {
+  if (grns.length === 0) {
     if (po) {
       pendingReasons.push(`No GRN found for ${po.po_number} — goods not confirmed received`);
       checks.grn_found_for_po = { pass: false, detail: `No GRN linked to ${po.po_number}` };
@@ -106,11 +126,17 @@ export function runThreeWayMatch(
       checks.grn_found_for_po = { pass: false, detail: "Skipped — PO not found" };
     }
   } else {
-    checks.grn_found_for_po = { pass: true, detail: `Found GRN ${grn.grn_number}` };
+    checks.grn_found_for_po = {
+      pass: true,
+      detail:
+        grns.length === 1
+          ? `Found GRN ${grns[0].grn_number}`
+          : `Found ${grns.length} GRNs (${grns.map((g) => g.grn_number).join(", ")})`,
+    };
   }
 
-  // ── Checks 4-6 only run when BOTH PO and GRN are found ──────────────────
-  if (po && grn) {
+  // ── Checks 4-6 only run when BOTH PO and at least one GRN are found ────────
+  if (po && grns.length > 0) {
     // ── 4. Total amount match (≤1 PKR tolerance for floating point) ──────────
     // Supabase returns numeric columns as strings at runtime — coerce both sides
     const poTotal = po.total_amount == null ? null : Number(po.total_amount);
@@ -167,12 +193,14 @@ export function runThreeWayMatch(
       }
     }
 
-    // ── 6. Quantity: invoice qty must equal GRN qty received (either direction) ─
-    if ((grn.line_items?.length ?? 0) > 0 && invoice.line_items.length > 0) {
+    // ── 6. Quantity: invoice qty must equal total GRN qty received across all ──
+    //      GRNs linked to this PO (either direction)
+    const grnLineItems = combineGrnLineItems(grns);
+    if (grnLineItems.length > 0 && invoice.line_items.length > 0) {
       const qtyFailures: string[] = [];
 
       for (const invItem of invoice.line_items) {
-        const grnItem = findLineItem(invItem, grn.line_items!);
+        const grnItem = findLineItem(invItem, grnLineItems);
         if (!grnItem) continue;
 
         // Skip if either side has no quantity recorded — can't compare
