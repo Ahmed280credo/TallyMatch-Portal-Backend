@@ -24,6 +24,11 @@ async function bootstrapWorker() {
   await NestFactory.createApplicationContext(InvoiceWorkerModule);
 }
 
-startHealthCheckServer();
+// Only needed on Render, where each service gets its own isolated PORT. Locally
+// the worker shares one .env with the API's PORT, so starting this unconditionally
+// steals the API's port and makes the worker eat all its requests instead.
+if (process.env.NODE_ENV === "production") {
+  startHealthCheckServer();
+}
 void bootstrapWorker();
 
