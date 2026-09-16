@@ -24,6 +24,10 @@ import type { ExtractedInvoice } from "../src/invoices/schemas/invoice-extractio
 import { sapB1Config } from "../src/integrations/sap-b1/sap-b1.config.js";
 
 const config = sapB1Config();
+// The connector is multi-tenant (sessions/requests keyed per org id). This
+// demo has no real org, so it just uses a fixed key — a real caller passes
+// the actual org id here.
+const DEMO_CACHE_KEY = "demo-org";
 
 function step(n: number, label: string) {
   console.log(`\n── ${n}. ${label} ──────────────────────────────`);
@@ -49,8 +53,8 @@ async function main() {
 
   step(2, "Pull Purchase Orders and Purchase Delivery Notes (GRNs) from SAP B1");
   const [pos, grns] = await Promise.all([
-    connector.fetchPurchaseOrders(),
-    connector.fetchPurchaseDeliveryNotes(),
+    connector.fetchPurchaseOrders(config, DEMO_CACHE_KEY),
+    connector.fetchPurchaseDeliveryNotes(config, DEMO_CACHE_KEY),
   ]);
   const po = pos[0];
   const grn = grns.find((g) => g.DocumentLines[0]?.BaseEntry === po.DocEntry);
@@ -104,7 +108,7 @@ async function main() {
   }
 
   step(6, "Push the matched invoice into SAP B1 as a Purchase Invoice");
-  const pushedInvoice = await connector.pushPurchaseInvoice({
+  const pushedInvoice = await connector.pushPurchaseInvoice(config, DEMO_CACHE_KEY, {
     CardCode: po.CardCode,
     CardName: po.CardName,
     DocDate: extractedInvoice.invoice_date!,
@@ -127,14 +131,14 @@ async function main() {
   console.log(`Pushed Purchase Invoice DocEntry=${pushedInvoice.DocEntry} DocNum=${pushedInvoice.DocNum}`);
 
   step(7, "Poll status immediately — should still be unpaid");
-  const beforePay = await connector.fetchPurchaseInvoiceStatus(pushedInvoice.DocEntry);
+  const beforePay = await connector.fetchPurchaseInvoiceStatus(config, DEMO_CACHE_KEY, pushedInvoice.DocEntry);
   console.log(`DocumentStatus=${beforePay.invoice.DocumentStatus} isPaid=${beforePay.isPaid}`);
   if (beforePay.isPaid) throw new Error("Invoice shows paid before we simulated payment — bug");
 
   step(8, "Simulate the client paying it from inside their own SAP B1");
   // A real integration would never call this — it exists only so the mock
   // can stand in for "someone in the client's SAP B1 clicked Pay".
-  const cookieHeader = await session.getCookieHeader();
+  const cookieHeader = await session.getCookieHeader(config, DEMO_CACHE_KEY);
   await fetch(`${config.baseUrl}/__mock/PurchaseInvoices(${pushedInvoice.DocEntry})/markPaid`, {
     method: "POST",
     headers: { Cookie: cookieHeader },
@@ -142,7 +146,7 @@ async function main() {
   console.log("Marked paid in mock SAP B1.");
 
   step(9, "Poll again — our connector should now see it as paid");
-  const afterPay = await connector.fetchPurchaseInvoiceStatus(pushedInvoice.DocEntry);
+  const afterPay = await connector.fetchPurchaseInvoiceStatus(config, DEMO_CACHE_KEY, pushedInvoice.DocEntry);
   console.log(`DocumentStatus=${afterPay.invoice.DocumentStatus} isPaid=${afterPay.isPaid} PaidToDate=${afterPay.invoice.PaidToDate}`);
   if (!afterPay.isPaid) throw new Error("Polling did not pick up the payment — bug");
 

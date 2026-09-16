@@ -6,6 +6,7 @@ import { validateEnv } from "./config/env.validation.js";
 import { redisConnectionOptions } from "./config/redis-connection.js";
 import { InvoicesModule } from "./invoices/invoices.module.js";
 import { ImportModule } from "./import/import.module.js";
+import { ErpConnectionsModule } from "./erp-connections/erp-connections.module.js";
 
 @Module({
   imports: [
@@ -21,7 +22,8 @@ import { ImportModule } from "./import/import.module.js";
     }),
     DatabaseModule,
     InvoicesModule,
-    ImportModule
+    ImportModule,
+    ErpConnectionsModule
   ]
 })
 export class AppModule {}

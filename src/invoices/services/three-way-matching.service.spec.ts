@@ -45,6 +45,10 @@ function po(overrides: Partial<PurchaseOrder> = {}): PurchaseOrder {
       { description: "Steel Rods 12mm", unit_price: 4000, amount: 400000 },
       { description: "Steel Plates", unit_price: 3500, amount: 112000 },
     ],
+    source: "manual",
+    erp_type: null,
+    erp_doc_entry: null,
+    erp_doc_num: null,
     created_at: new Date().toISOString(),
     ...overrides,
   };
@@ -63,6 +67,10 @@ function grn(overrides: Partial<GoodsReceiptNote> = {}): GoodsReceiptNote {
       { description: "Steel Plates", quantity: 32, amount: 0 },
     ],
     received_at: new Date().toISOString(),
+    source: "manual",
+    erp_type: null,
+    erp_doc_entry: null,
+    erp_doc_num: null,
     created_at: new Date().toISOString(),
     ...overrides,
   };

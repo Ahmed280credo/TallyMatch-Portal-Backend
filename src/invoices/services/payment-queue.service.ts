@@ -275,6 +275,7 @@ export class PaymentQueueService {
 
     const updated = await this.repository.updateInvoice(orgId, invoiceId, {
       status: "paid",
+      payment_source: "manual",
       proof_of_payment_url: proofOfPaymentUrl,
       transaction_reference: transactionReference,
       payment_date: paymentDate,

@@ -9,7 +9,7 @@ import type { PurchaseOrder, PurchaseDeliveryNote } from "./sap-b1.types.js";
 // document); DocEntry is the internal row id used for API linkage — our
 // po_number/grn_number should be the former, matching what a vendor's
 // invoice would actually reference.
-function mapLineItems(lines: PurchaseOrder["DocumentLines"]): InvoiceLineItem[] {
+export function mapLineItems(lines: PurchaseOrder["DocumentLines"]): InvoiceLineItem[] {
   return lines.map((line) => ({
     sku: line.ItemCode,
     description: line.ItemDescription,
@@ -28,6 +28,10 @@ export function mapPurchaseOrderToInternal(po: PurchaseOrder): InternalPurchaseO
     total_amount: po.DocTotal,
     currency: null,
     line_items: mapLineItems(po.DocumentLines),
+    source: "erp_sync",
+    erp_type: "sap_b1",
+    erp_doc_entry: po.DocEntry,
+    erp_doc_num: po.DocNum,
     created_at: po.DocDate,
   };
 }
@@ -48,6 +52,10 @@ export function mapPurchaseDeliveryNoteToInternal(grn: PurchaseDeliveryNote, poB
     total_received_amount: grn.DocTotal,
     line_items: mapLineItems(grn.DocumentLines),
     received_at: grn.DocDate,
+    source: "erp_sync",
+    erp_type: "sap_b1",
+    erp_doc_entry: grn.DocEntry,
+    erp_doc_num: grn.DocNum,
     created_at: grn.DocDate,
   };
 }

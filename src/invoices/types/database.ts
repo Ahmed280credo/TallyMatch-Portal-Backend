@@ -12,7 +12,17 @@ export type InvoiceStatus =
   | "payment_processing"
   | "paid";
 export type MatchStatus = "matched" | "mismatch" | "pending";
-export type AuditEvent = "DUPLICATE_DETECTED" | "EXTRACTION_FAILED" | "MATCH_FAILED" | "APPROVED" | "PROCESSED" | "PAID" | "DELETED";
+export type AuditEvent =
+  | "DUPLICATE_DETECTED"
+  | "EXTRACTION_FAILED"
+  | "MATCH_FAILED"
+  | "APPROVED"
+  | "PROCESSED"
+  | "PAID"
+  | "DELETED"
+  | "ERP_PUSHED"
+  | "ERP_PUSH_FAILED"
+  | "ERP_PAYMENT_SYNCED";
 export type FbrStatus = "Active" | "Suspended" | "Unregistered";
 
 export interface InvoiceLineItem {
@@ -23,6 +33,11 @@ export interface InvoiceLineItem {
   unit_price?: number | null;
   amount: number;
 }
+
+export type ErpPushStatus = "not_pushed" | "pushed" | "failed";
+export type PaymentSource = "manual" | "erp_sync";
+export type RecordSource = "manual" | "csv_import" | "erp_sync";
+export type ErpConnectionStatus = "connected" | "disconnected" | "error";
 
 export interface Invoice {
   id: string;
@@ -56,6 +71,18 @@ export interface Invoice {
   vendor_bank_name: string | null;
   vendor_account_number: string | null;
   vendor_iban: string | null;
+  // ERP push (invoice -> ERP) and payment sync (ERP -> invoice) tracking.
+  // erp_type is nullable/independent of erp_connections.erp_type so a past
+  // push record still makes sense if the org's active connection later
+  // changes to a different ERP.
+  erp_type: string | null;
+  erp_push_status: ErpPushStatus;
+  erp_doc_entry: number | null;
+  erp_doc_num: number | null;
+  erp_push_error: string | null;
+  erp_pushed_at: string | null;
+  payment_source: PaymentSource | null;
+  erp_last_synced_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,6 +104,10 @@ export interface PurchaseOrder {
   total_amount: number | null;
   currency: string | null;
   line_items: InvoiceLineItem[] | null;
+  source: RecordSource;
+  erp_type: string | null;
+  erp_doc_entry: number | null;
+  erp_doc_num: number | null;
   created_at: string;
 }
 
@@ -89,7 +120,27 @@ export interface GoodsReceiptNote {
   total_received_amount: number | null;
   line_items: InvoiceLineItem[] | null;
   received_at: string | null;
+  source: RecordSource;
+  erp_type: string | null;
+  erp_doc_entry: number | null;
+  erp_doc_num: number | null;
   created_at: string;
+}
+
+export interface ErpConnection {
+  id: string;
+  org_id: string;
+  erp_type: string;
+  base_url: string;
+  company_db: string | null;
+  username: string;
+  password_encrypted: string;
+  status: ErpConnectionStatus;
+  status_message: string | null;
+  last_tested_at: string | null;
+  last_sync_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface InvoiceAuditLog {
@@ -172,6 +223,13 @@ export interface Database {
         Row: PaymentRun;
         Insert: Partial<Omit<PaymentRun, "id" | "created_at">> & Pick<PaymentRun, "org_id">;
         Update: Partial<Omit<PaymentRun, "id" | "org_id" | "created_at">>;
+        Relationships: [];
+      };
+      erp_connections: {
+        Row: ErpConnection;
+        Insert: Partial<Omit<ErpConnection, "id" | "created_at" | "updated_at">> &
+          Pick<ErpConnection, "org_id" | "base_url" | "username" | "password_encrypted">;
+        Update: Partial<Omit<ErpConnection, "id" | "org_id" | "created_at">>;
         Relationships: [];
       };
     };

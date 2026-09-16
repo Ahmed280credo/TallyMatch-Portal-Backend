@@ -41,6 +41,7 @@ import {
   type MarkPaidDto,
   type PaymentQueueQuery
 } from "./services/payment-queue.service.js";
+import { ErpPushService } from "./services/erp-push.service.js";
 
 const MAX_CSV_SIZE_MB = 20;
 const MAX_PROOF_SIZE_MB = 10;
@@ -60,7 +61,8 @@ export class InvoicesController {
     @Inject(ConfigService)
     private readonly config: ConfigService,
     private readonly csvBulkImportService: CsvBulkImportService,
-    private readonly paymentQueueService: PaymentQueueService
+    private readonly paymentQueueService: PaymentQueueService,
+    private readonly erpPushService: ErpPushService
   ) {}
 
   @Post("upload")
@@ -318,6 +320,40 @@ export class InvoicesController {
     }
 
     return this.paymentQueueService.markPaid(orgId, invoiceId, user?.id, dto ?? {}, file);
+  }
+
+  /**
+   * Push a matched invoice into the org's connected ERP (SAP B1 today) as a
+   * Purchase Invoice. Rejects if already pushed — use retry (same endpoint)
+   * after a failed push, since erp_push_status resets to "failed" on error.
+   */
+  @Post(":id/push-to-erp")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(SupabaseAuthGuard)
+  async pushInvoiceToErp(
+    @OrgId() orgId: string | undefined,
+    @CurrentUser() user: User | undefined,
+    @Param("id") invoiceId: string
+  ) {
+    if (!orgId || orgId.length < 8) {
+      throw new BadRequestException("Missing or invalid x-org-id header");
+    }
+    return this.erpPushService.pushInvoice(orgId, invoiceId, user?.id);
+  }
+
+  /**
+   * Poll the ERP for a pushed invoice's payment/reconciliation status and
+   * update our own status to "paid" (payment_source: "erp_sync") if the
+   * client has paid it from inside their own SAP B1.
+   */
+  @Post(":id/sync-erp-payment-status")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(SupabaseAuthGuard)
+  async syncInvoiceErpPaymentStatus(@OrgId() orgId: string | undefined, @Param("id") invoiceId: string) {
+    if (!orgId || orgId.length < 8) {
+      throw new BadRequestException("Missing or invalid x-org-id header");
+    }
+    return this.erpPushService.syncPaymentStatus(orgId, invoiceId);
   }
 
   /**

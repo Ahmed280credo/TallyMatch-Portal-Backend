@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { sapB1Config } from "./sap-b1.config.js";
+import type { SapB1Config } from "./sap-b1.config.js";
 import { SapB1Error, type SapB1ErrorResponse } from "./sap-b1.types.js";
 
 interface SessionState {
@@ -15,40 +15,46 @@ const REAUTH_SAFETY_MARGIN_MS = 60_000;
 // Service Layer uses cookie-based sessions (B1SESSION + ROUTEID), not bearer
 // tokens — this service owns login + cookie storage + expiry so the rest of
 // the connector never has to think about auth.
+//
+// Multi-tenant: TallyMatch talks to a different SAP B1 (base URL + company +
+// credentials) per organization, so a single cached session isn't enough —
+// sessions are keyed by cacheKey (callers pass the org id) and held in a Map.
 @Injectable()
 export class SapB1SessionService {
   private readonly logger = new Logger(SapB1SessionService.name);
-  private session: SessionState | null = null;
-  private loginPromise: Promise<string> | null = null;
+  private sessions = new Map<string, SessionState>();
+  private loginPromises = new Map<string, Promise<string>>();
 
-  async getCookieHeader(): Promise<string> {
-    if (this.session && Date.now() < this.session.expiresAt - REAUTH_SAFETY_MARGIN_MS) {
-      return this.session.cookieHeader;
+  async getCookieHeader(config: SapB1Config, cacheKey: string): Promise<string> {
+    const session = this.sessions.get(cacheKey);
+    if (session && Date.now() < session.expiresAt - REAUTH_SAFETY_MARGIN_MS) {
+      return session.cookieHeader;
     }
-    return this.login();
+    return this.login(config, cacheKey);
   }
 
   // Called by the client on a 401 mid-request, in case the session died
   // early (server restart, admin killed it, etc.) — forces a fresh login
   // regardless of what we think the expiry is.
-  invalidate(): void {
-    this.session = null;
+  invalidate(cacheKey: string): void {
+    this.sessions.delete(cacheKey);
   }
 
-  private async login(): Promise<string> {
+  private async login(config: SapB1Config, cacheKey: string): Promise<string> {
     // Coalesce concurrent callers into a single login request instead of
     // each firing its own — avoids hammering Service Layer with parallel
     // /Login calls when several connector calls race on a cold/expired session.
-    if (this.loginPromise) return this.loginPromise;
+    const existing = this.loginPromises.get(cacheKey);
+    if (existing) return existing;
 
-    this.loginPromise = this.doLogin().finally(() => {
-      this.loginPromise = null;
+    const promise = this.doLogin(config, cacheKey).finally(() => {
+      this.loginPromises.delete(cacheKey);
     });
-    return this.loginPromise;
+    this.loginPromises.set(cacheKey, promise);
+    return promise;
   }
 
-  private async doLogin(): Promise<string> {
-    const config = sapB1Config();
+  private async doLogin(config: SapB1Config, cacheKey: string): Promise<string> {
     const res = await fetch(`${config.baseUrl}/Login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -81,12 +87,12 @@ export class SapB1SessionService {
         ? setCookieHeaders.map((c) => c.split(";")[0]).join("; ")
         : `B1SESSION=${body.SessionId}`;
 
-    this.session = {
+    this.sessions.set(cacheKey, {
       cookieHeader,
       expiresAt: Date.now() + body.SessionTimeout * 60_000,
-    };
+    });
 
-    this.logger.log(`SAP B1 session established (timeout ${body.SessionTimeout}m)`);
+    this.logger.log(`SAP B1 session established for ${cacheKey} (timeout ${body.SessionTimeout}m)`);
     return cookieHeader;
   }
 }

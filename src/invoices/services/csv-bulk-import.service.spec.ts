@@ -51,6 +51,10 @@ class MockAccountsPayableRepository {
         total_amount: 5000,
         currency: "PKR",
         line_items: [{ description: "Office Desks", quantity: 5, unit_price: 1000, amount: 5000 }],
+        source: "manual",
+        erp_type: null,
+        erp_doc_entry: null,
+        erp_doc_num: null,
         created_at: new Date().toISOString(),
       },
     ];
@@ -67,6 +71,10 @@ class MockAccountsPayableRepository {
         total_received_amount: 5000,
         line_items: [{ description: "Office Desks", quantity: 5, amount: 5000 }],
         received_at: new Date().toISOString(),
+        source: "manual",
+        erp_type: null,
+        erp_doc_entry: null,
+        erp_doc_num: null,
         created_at: new Date().toISOString(),
       },
     ];

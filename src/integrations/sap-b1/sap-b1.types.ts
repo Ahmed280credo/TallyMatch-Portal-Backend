@@ -78,11 +78,14 @@ export interface CreatePurchaseInvoiceInput {
     UnitPrice: number;
     LineTotal: number;
     WarehouseCode?: string;
-    // Chains the invoice line back to the GRN it was matched against —
-    // SAP B1's standard base-document linkage.
-    BaseType: string;
-    BaseEntry: number;
-    BaseLine: number;
+    // Chains the invoice line back to the GRN it was matched against — SAP
+    // B1's standard base-document linkage. Optional: a real SAP B1 also
+    // accepts a standalone AP invoice with no base document (e.g. the
+    // matched GRN wasn't itself SAP-B1-sourced, so there's no DocEntry to
+    // chain to).
+    BaseType?: string;
+    BaseEntry?: number;
+    BaseLine?: number;
   }>;
 }
 
