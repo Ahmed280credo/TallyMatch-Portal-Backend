@@ -8,7 +8,10 @@
     "build": "nest build",
     "start:prod": "node dist/main.js",
     "start:worker:prod": "node dist/worker.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:tools": "tsc --noEmit -p tsconfig.tools.json",
+    "mock:sap-b1": "tsx mock-sap-b1/server.ts",
+    "demo:sap-b1": "tsx demo/sap-b1-e2e-demo.ts"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",
@@ -33,6 +36,7 @@
     "@types/express": "^4.17.21",
     "@types/multer": "^2.1.0",
     "@types/node": "^22.5.4",
+    "express": "^4.22.1",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"
   }
