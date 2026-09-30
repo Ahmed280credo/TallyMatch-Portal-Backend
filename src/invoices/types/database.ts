@@ -74,7 +74,11 @@ export type FindingCode =
   // vision-vs-text-layer cross-check and the server-side line-math recompute
   // the spec explicitly asks for.
   | "VISION_TEXT_MISMATCH"
-  | "LINE_MATH_MISMATCH";
+  | "LINE_MATH_MISMATCH"
+  // Both the PO and GRN a match resolved against are bundle_extracted (paper
+  // evidence only, nothing verified against a live ERP) — severity depends
+  // on the org's require_erp_verification_for_approval setting.
+  | "UNVERIFIED_SOURCE";
 
 export interface Finding {
   code: FindingCode;
@@ -101,7 +105,10 @@ export interface Bundle {
   page_count: number | null;
   page_classification: PageClassification[] | null;
   extraction_mode: "erp" | "paper_only";
-  prompt_version: string | null;
+  // NOT NULL DEFAULT 'v1' in the DB — part of the cache key alongside
+  // file_hash, so bumping EXTRACTION_PROMPT_VERSION forces re-extraction of
+  // an exact-same-bytes re-upload instead of silently reusing stale results.
+  prompt_version: string;
   model_name: string | null;
   raw_gemini_response: Json | null;
   created_at: string;
@@ -113,6 +120,13 @@ export interface Organization {
   slug: string;
   extraction_v2_enabled: boolean;
   created_at: string;
+}
+
+export interface OrgMatchSettings {
+  org_id: string;
+  require_erp_verification_for_approval: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Invoice {
@@ -332,6 +346,12 @@ export interface Database {
         Row: Organization;
         Insert: Partial<Omit<Organization, "id" | "created_at">> & Pick<Organization, "name" | "slug">;
         Update: Partial<Omit<Organization, "id" | "created_at">>;
+        Relationships: [];
+      };
+      org_match_settings: {
+        Row: OrgMatchSettings;
+        Insert: Partial<Omit<OrgMatchSettings, "created_at" | "updated_at">> & Pick<OrgMatchSettings, "org_id">;
+        Update: Partial<Omit<OrgMatchSettings, "org_id" | "created_at">>;
         Relationships: [];
       };
     };

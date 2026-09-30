@@ -13,7 +13,7 @@ import { groupBundlePages, type DocumentGroup } from "./bundle-grouping.js";
 import { resolveInvoiceDocument, resolvePoDocument, resolveGrnDocument } from "./bundle-document-resolvers.js";
 import { decidePoPrecedence, decideGrnPrecedence } from "./bundle-precedence.js";
 import { mergeExtractionFindingsWithMatchResult } from "./bundle-status.js";
-import type { Finding, Invoice } from "../../types/database.js";
+import type { Finding, Invoice, GoodsReceiptNote, OrgMatchSettings, PurchaseOrder } from "../../types/database.js";
 import type { ExtractedInvoice } from "../../schemas/invoice-extraction.schema.js";
 
 export interface BundleProcessingResult {
@@ -52,7 +52,7 @@ export class BundleAssemblyService {
   ): Promise<BundleProcessingResult> {
     const fileHash = createHash("sha256").update(pdfBuffer).digest("hex");
 
-    const existingBundle = await this.repository.findBundleByFileHash(orgId, fileHash);
+    const existingBundle = await this.repository.findBundleByFileHash(orgId, fileHash, EXTRACTION_PROMPT_VERSION);
     if (existingBundle) {
       // An exact re-upload (identical bytes) is treated as already processed
       // rather than a fresh submission — return the invoices already created
@@ -87,7 +87,15 @@ export class BundleAssemblyService {
       raw_gemini_response: null
     });
 
-    // ── PO / GRN evidence first, so invoice matching below can find them ────
+    // ── PO / GRN evidence first, so invoice matching below can find them.
+    //    Rows actually written (not skipped for a higher-trust existing row)
+    //    are tracked here, keyed by number, so the first invoice below that
+    //    references a given number can "claim" it (set invoice_id) — the
+    //    matcher requires invoice_id non-null before ever considering a
+    //    bundle_extracted row, so an orphaned row (invoice doc extraction
+    //    failed) never silently becomes match evidence. ─────────────────────
+    this.unclaimedBundlePOs.clear();
+    this.unclaimedBundleGRNs.clear();
     for (const doc of extractedDocs.filter((d) => d.kind === "po")) {
       await this.writePoEvidence(orgId, bundle.id, doc);
     }
@@ -95,13 +103,15 @@ export class BundleAssemblyService {
       await this.writeGrnEvidence(orgId, bundle.id, doc);
     }
 
+    const orgMatchSettings = await this.repository.getOrgMatchSettings(orgId);
+
     // ── One invoice per invoice document, sequentially (safe against a rare
     //    same-bundle same-vendor-and-number edge case; bundles are small) ───
     const invoiceDocs = extractedDocs.filter((d) => d.kind === "invoice");
     const results: Array<{ id: string; status: string }> = [];
 
     for (const doc of invoiceDocs) {
-      const invoice = await this.processInvoiceDocument(orgId, bundle.id, doc, sourceFileName, uploadedByUserId);
+      const invoice = await this.processInvoiceDocument(orgId, bundle.id, doc, sourceFileName, uploadedByUserId, orgMatchSettings);
       if (invoice) results.push({ id: invoice.id, status: invoice.status });
     }
 
@@ -124,7 +134,7 @@ export class BundleAssemblyService {
       return;
     }
 
-    await this.repository.upsertBundlePurchaseOrder(orgId, {
+    const written = await this.repository.upsertBundlePurchaseOrder(orgId, {
       po_number: resolved.po_number,
       vendor_name: resolved.vendor_name,
       total_amount: resolved.total_amount,
@@ -133,6 +143,7 @@ export class BundleAssemblyService {
       bundle_id: bundleId,
       invoice_id: null
     });
+    this.unclaimedBundlePOs.set(resolved.po_number, written);
   }
 
   private async writeGrnEvidence(orgId: string, bundleId: string, doc: Extract<ExtractedDocument, { kind: "grn" }>): Promise<void> {
@@ -151,7 +162,7 @@ export class BundleAssemblyService {
       return;
     }
 
-    await this.repository.upsertBundleGoodsReceiptNote(orgId, {
+    const written = await this.repository.upsertBundleGoodsReceiptNote(orgId, {
       grn_number: resolved.grn_number,
       po_number: resolved.po_number,
       vendor_name: resolved.vendor_name,
@@ -161,6 +172,7 @@ export class BundleAssemblyService {
       bundle_id: bundleId,
       invoice_id: null
     });
+    this.unclaimedBundleGRNs.set(resolved.grn_number, written);
   }
 
   // po_number -> EVIDENCE_MISMATCH findings raised while writing PO/GRN
@@ -169,12 +181,21 @@ export class BundleAssemblyService {
   // service isn't request-scoped so state must not leak across bundles).
   private pendingPoEvidenceFindings = new Map<string, Finding[]>();
 
+  // Bundle-extracted PO/GRN rows written this processBundle call that no
+  // invoice has claimed (invoice_id) yet — see the comment above the reset
+  // in processBundle. Once claimed by the first matching invoice, removed
+  // from these maps; the matcher then allows ANY invoice in the same bundle
+  // to use the row (scoped by bundle_id, not by which invoice claimed it).
+  private unclaimedBundlePOs = new Map<string, PurchaseOrder>();
+  private unclaimedBundleGRNs = new Map<string, GoodsReceiptNote>();
+
   private async processInvoiceDocument(
     orgId: string,
     bundleId: string,
     doc: Extract<ExtractedDocument, { kind: "invoice" }>,
     sourceFileName: string,
-    uploadedByUserId: string | undefined
+    uploadedByUserId: string | undefined,
+    orgMatchSettings: OrgMatchSettings
   ): Promise<Invoice | null> {
     const resolved = resolveInvoiceDocument(doc.data, doc.pdfText);
 
@@ -236,6 +257,20 @@ export class BundleAssemblyService {
       findings
     });
 
+    // First invoice in the bundle to reference a given PO/GRN number claims
+    // it (invoice_id set) — required before the matcher will ever consider
+    // a bundle_extracted row eligible. See unclaimedBundlePOs/GRNs above.
+    if (resolved.po_number && this.unclaimedBundlePOs.has(resolved.po_number)) {
+      const po = this.unclaimedBundlePOs.get(resolved.po_number)!;
+      await this.repository.linkPurchaseOrderToInvoice(orgId, po.id, invoice.id);
+      this.unclaimedBundlePOs.delete(resolved.po_number);
+    }
+    if (resolved.grn_number && this.unclaimedBundleGRNs.has(resolved.grn_number)) {
+      const grn = this.unclaimedBundleGRNs.get(resolved.grn_number)!;
+      await this.repository.linkGoodsReceiptNoteToInvoice(orgId, grn.id, invoice.id);
+      this.unclaimedBundleGRNs.delete(resolved.grn_number);
+    }
+
     // Reuse the existing, unchanged 3-way matcher — it already reads
     // purchase_orders/goods_receipt_notes regardless of source, so
     // bundle_extracted rows (or a pre-existing higher-trust row the
@@ -258,7 +293,16 @@ export class BundleAssemblyService {
       vendor_iban: resolved.vendor_iban,
       line_items: resolved.line_items
     };
-    const matchResult = await this.matcher.matchInvoice(orgId, matchInput);
+    const matchResult = await this.matcher.matchInvoice(orgId, matchInput, { bundleId });
+
+    if (matchResult.unverifiedSource) {
+      findings.push({
+        code: "UNVERIFIED_SOURCE",
+        severity: orgMatchSettings.require_erp_verification_for_approval ? "REVIEW" : "INFO",
+        message: "Matched on paper evidence only — the PO and GRN both came from this upload, not a verified ERP record."
+      });
+    }
+
     const merged = mergeExtractionFindingsWithMatchResult(findings, matchResult);
     const finalMatchStatus = merged.status === "approved" ? "matched" : merged.status;
 
@@ -269,7 +313,8 @@ export class BundleAssemblyService {
         mismatch_reasons: merged.mismatch_reasons,
         pending_reasons: merged.pending_reasons
       } as unknown as import("../../types/database.js").Json,
-      status: merged.status
+      status: merged.status,
+      findings
     });
 
     try {

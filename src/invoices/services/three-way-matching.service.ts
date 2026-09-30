@@ -25,6 +25,12 @@ export interface MatchResult {
     checks: MatchChecks;
     checked_at: string;
   };
+  // True when the PO and every GRN this match resolved against are both
+  // bundle_extracted (paper evidence only — nothing verified against a live
+  // ERP). Callers with bundle/org context (BundleAssemblyService) turn this
+  // into an UNVERIFIED_SOURCE finding; unset here since runThreeWayMatch
+  // itself has no org_match_settings to decide severity with.
+  unverifiedSource: boolean;
 }
 
 function normalizeKey(s: string): string {
@@ -68,6 +74,49 @@ function combineGrnLineItems(grns: GoodsReceiptNote[]): InvoiceLineItem[] {
   return combined;
 }
 
+// Exported so callers with additional context (BundleAssemblyService, for the
+// UNVERIFIED_SOURCE check) can independently look up exactly which PO/GRNs a
+// match resolved against, without runThreeWayMatch needing to expose that in
+// its return shape. Case-insensitive trim comparison — Gemini may extract
+// different casing.
+export function findMatchedPurchaseOrder(
+  invoicePoNumber: string | null | undefined,
+  purchaseOrders: PurchaseOrder[]
+): PurchaseOrder | undefined {
+  const trimmed = invoicePoNumber?.trim();
+  if (!trimmed) return undefined;
+  return purchaseOrders.find((p) => p.po_number.trim().toLowerCase() === trimmed.toLowerCase());
+}
+
+export function findMatchedGoodsReceiptNotes(
+  po: PurchaseOrder | undefined,
+  goodsReceiptNotes: GoodsReceiptNote[]
+): GoodsReceiptNote[] {
+  if (!po) return [];
+  return goodsReceiptNotes.filter((g) => g.po_number === po.po_number);
+}
+
+// Eligibility filtering — applied by ThreeWayMatchingService.matchInvoice
+// before candidates ever reach runThreeWayMatch, so the pure matching
+// function itself stays agnostic to source/bundle semantics. A superseded
+// row is never eligible regardless of source. A bundle_extracted row is only
+// eligible once some invoice in its bundle has claimed it (invoice_id set —
+// guards against a dangling row from a bundle whose invoice document itself
+// failed to extract) AND only for invoices in that SAME bundle (bundle_id
+// match) — never for the old single-PDF/CSV pipeline (no bundle context) and
+// never for a different bundle's invoice.
+export function filterEligibleForMatching<
+  T extends { is_superseded: boolean; source: string; invoice_id: string | null; bundle_id: string | null }
+>(rows: T[], context?: { bundleId?: string | null }): T[] {
+  return rows.filter((row) => {
+    if (row.is_superseded) return false;
+    if (row.source !== "bundle_extracted") return true;
+    if (row.invoice_id == null) return false;
+    if (!context?.bundleId) return false;
+    return row.bundle_id === context.bundleId;
+  });
+}
+
 export function runThreeWayMatch(
   invoice: ExtractedInvoice,
   purchaseOrders: PurchaseOrder[],
@@ -96,12 +145,7 @@ export function runThreeWayMatch(
   }
 
   // ── 2. PO exists in the system ──────────────────────────────────────────
-  // Case-insensitive trim comparison — Gemini may extract different casing
-  const po = invoicePoNumber
-    ? purchaseOrders.find(
-        (p) => p.po_number.trim().toLowerCase() === invoicePoNumber.toLowerCase()
-      )
-    : undefined;
+  const po = findMatchedPurchaseOrder(invoicePoNumber, purchaseOrders);
 
   if (!po) {
     if (invoicePoNumber) {
@@ -116,7 +160,7 @@ export function runThreeWayMatch(
 
   // ── 3. GRN(s) exist linked to that PO — a PO can be received across ────────
   //      multiple GRNs (partial/staggered deliveries), so collect all of them.
-  const grns = po ? goodsReceiptNotes.filter((g) => g.po_number === po.po_number) : [];
+  const grns = findMatchedGoodsReceiptNotes(po, goodsReceiptNotes);
 
   if (grns.length === 0) {
     if (po) {
@@ -252,6 +296,9 @@ export function runThreeWayMatch(
     status = "approved";
   }
 
+  const unverifiedSource =
+    po?.source === "bundle_extracted" && grns.length > 0 && grns.every((g) => g.source === "bundle_extracted");
+
   return {
     status,
     mismatch_reasons: mismatchReasons,
@@ -260,6 +307,7 @@ export function runThreeWayMatch(
       checks,
       checked_at: new Date().toISOString(),
     },
+    unverifiedSource,
   };
 }
 
@@ -267,11 +315,18 @@ export function runThreeWayMatch(
 export class ThreeWayMatchingService {
   constructor(private readonly repository: AccountsPayableRepository) {}
 
-  async matchInvoice(orgId: string, invoice: ExtractedInvoice): Promise<MatchResult> {
-    const [purchaseOrders, goodsReceiptNotes] = await Promise.all([
+  async matchInvoice(
+    orgId: string,
+    invoice: ExtractedInvoice,
+    context?: { bundleId?: string | null }
+  ): Promise<MatchResult> {
+    const [allPurchaseOrders, allGoodsReceiptNotes] = await Promise.all([
       this.repository.listPurchaseOrders(orgId),
       this.repository.listGoodsReceiptNotes(orgId),
     ]);
+
+    const purchaseOrders = filterEligibleForMatching(allPurchaseOrders, context);
+    const goodsReceiptNotes = filterEligibleForMatching(allGoodsReceiptNotes, context);
 
     console.log(`[3-WAY MATCH] invoice PO="${invoice.po_number}" total=${invoice.total_amount}`);
     console.log(`[3-WAY MATCH] DB POs: ${purchaseOrders.map(p => `"${p.po_number}" total=${p.total_amount}(${typeof p.total_amount})`).join(", ") || "none"}`);

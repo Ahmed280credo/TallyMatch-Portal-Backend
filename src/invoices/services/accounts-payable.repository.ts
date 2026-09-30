@@ -6,6 +6,7 @@ import type {
   GoodsReceiptNote,
   Invoice,
   InvoiceAuditLog,
+  OrgMatchSettings,
   Organization,
   PaymentRun,
   PurchaseOrder
@@ -42,6 +43,12 @@ function unwrap<T>(data: T | null, error: { message: string } | null): T {
   return data as T;
 }
 
+// Matches the SQL expression in invoices_org_vendor_invoice_number_unique:
+// regexp_replace(lower(btrim(vendor_name)), '\s+', ' ', 'g').
+function normalizeVendorName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 @Injectable()
 export class AccountsPayableRepository {
   constructor(
@@ -49,22 +56,33 @@ export class AccountsPayableRepository {
     private readonly supabase: any
   ) {}
 
+  // Mirrors the two DB unique indexes exactly: invoices_org_vendor_invoice_number_unique
+  // (normalised vendor + invoice_number, both present) and
+  // invoices_org_invoice_number_no_vendor_unique (invoice_number alone, when
+  // vendor_name is null on both sides). Normalisation happens here in app
+  // code rather than via a DB-side .ilike()/expression filter, since
+  // PostgREST has no clean way to apply the same regexp_replace the unique
+  // index uses — invoice_number matches are rare enough per org that
+  // fetching the (usually 0-1) candidates and comparing normalised vendor
+  // names in memory is simpler and provably matches the index's semantics.
   async findInvoiceByNumber(orgId: string, invoiceNumber: string, vendorName?: string | null): Promise<Invoice | null> {
     requireOrgId(orgId);
 
-    let query = this.supabase
+    const { data, error } = await this.supabase
       .from("invoices")
       .select("*")
       .eq("org_id", orgId)
       .eq("invoice_number", invoiceNumber);
 
-    if (vendorName && vendorName.trim()) {
-      query = query.ilike("vendor_name", vendorName.trim());
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as Invoice[];
+
+    const trimmedVendor = vendorName?.trim();
+    if (trimmedVendor) {
+      const target = normalizeVendorName(trimmedVendor);
+      return rows.find((r) => r.vendor_name != null && normalizeVendorName(r.vendor_name) === target) ?? null;
     }
-
-    const { data, error } = await query.maybeSingle();
-
-    return unwrap(data, error);
+    return rows.find((r) => r.vendor_name == null) ?? null;
   }
 
   async deleteInvoice(orgId: string, invoiceId: string): Promise<void> {
@@ -465,7 +483,11 @@ export class AccountsPayableRepository {
     return unwrap(data, error);
   }
 
-  async findBundleByFileHash(orgId: string, fileHash: string): Promise<Bundle | null> {
+  // Cache key is (org_id, file_hash, prompt_version) — an exact re-upload is
+  // only reused if it was extracted with the CURRENT prompt version; a prompt
+  // bump makes a previously-cached bundle a cache miss, so it re-extracts
+  // instead of silently serving stale output.
+  async findBundleByFileHash(orgId: string, fileHash: string, promptVersion: string): Promise<Bundle | null> {
     requireOrgId(orgId);
 
     const { data, error } = await this.supabase
@@ -473,6 +495,7 @@ export class AccountsPayableRepository {
       .select("*")
       .eq("org_id", orgId)
       .eq("file_hash", fileHash)
+      .eq("prompt_version", promptVersion)
       .maybeSingle();
 
     return unwrap(data, error);
@@ -554,6 +577,59 @@ export class AccountsPayableRepository {
       .eq("bundle_id", bundleId);
 
     return unwrap(data, error);
+  }
+
+  // Called once, by whichever invoice in the bundle first references this
+  // PO/GRN by number — see BundleAssemblyService. invoice_id being non-null
+  // is what the matcher requires before it will ever use a bundle_extracted
+  // row at all; bundle_id (already set at insert time) is the actual scoping
+  // key that lets a second invoice in the same bundle reuse the same evidence.
+  async linkPurchaseOrderToInvoice(orgId: string, purchaseOrderId: string, invoiceId: string): Promise<void> {
+    requireOrgId(orgId);
+
+    const { error } = await this.supabase
+      .from("purchase_orders")
+      .update({ invoice_id: invoiceId })
+      .eq("org_id", orgId)
+      .eq("id", purchaseOrderId);
+
+    if (error) throw new Error(error.message);
+  }
+
+  async linkGoodsReceiptNoteToInvoice(orgId: string, goodsReceiptNoteId: string, invoiceId: string): Promise<void> {
+    requireOrgId(orgId);
+
+    const { error } = await this.supabase
+      .from("goods_receipt_notes")
+      .update({ invoice_id: invoiceId })
+      .eq("org_id", orgId)
+      .eq("id", goodsReceiptNoteId);
+
+    if (error) throw new Error(error.message);
+  }
+
+  // Defaults to requiring ERP verification (matches the DB column default)
+  // when no row exists for the org yet — an org must explicitly opt out,
+  // not implicitly get a permissive default just because it never visited
+  // a settings page for this.
+  async getOrgMatchSettings(orgId: string): Promise<OrgMatchSettings> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("org_match_settings")
+      .select("*")
+      .eq("org_id", orgId)
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    if (data) return data as OrgMatchSettings;
+
+    return {
+      org_id: orgId,
+      require_erp_verification_for_approval: true,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString()
+    };
   }
 }
 

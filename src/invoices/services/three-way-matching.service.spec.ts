@@ -1,4 +1,4 @@
-import { runThreeWayMatch } from "./three-way-matching.service.js";
+import { runThreeWayMatch, filterEligibleForMatching } from "./three-way-matching.service.js";
 import type { ExtractedInvoice } from "../schemas/invoice-extraction.schema.js";
 import type { GoodsReceiptNote, PurchaseOrder } from "../types/database.js";
 
@@ -285,6 +285,79 @@ async function runTests() {
       result.status === "mismatch" && result.mismatch_reasons.some((r) => r.includes("over-billing")),
       result
     );
+  }
+
+  // 14. unverifiedSource: true when both matched PO and GRN are bundle_extracted
+  {
+    const result = runThreeWayMatch(
+      invoice(),
+      [po({ source: "bundle_extracted" })],
+      [grn({ source: "bundle_extracted" })]
+    );
+    check("14. Both PO and GRN bundle_extracted → unverifiedSource true", result.unverifiedSource === true, result);
+  }
+
+  // 15. unverifiedSource: false when PO is manual even if GRN is bundle_extracted
+  {
+    const result = runThreeWayMatch(invoice(), [po({ source: "manual" })], [grn({ source: "bundle_extracted" })]);
+    check("15. PO manual, GRN bundle_extracted → unverifiedSource false", result.unverifiedSource === false, result);
+  }
+
+  // 16. unverifiedSource: false when no PO/GRN matched at all
+  {
+    const result = runThreeWayMatch(invoice({ po_number: "PO-9999" }), [po()], [grn()]);
+    check("16. No PO matched → unverifiedSource false", result.unverifiedSource === false, result);
+  }
+
+  // ── filterEligibleForMatching (item 3: matcher eligibility rules) ─────────
+
+  // 17. is_superseded row excluded regardless of source
+  {
+    const rows = filterEligibleForMatching([po({ is_superseded: true, source: "erp_sync" })]);
+    check("17. is_superseded row excluded", rows.length === 0, rows);
+  }
+
+  // 18. bundle_extracted row with null invoice_id excluded even with matching bundle context
+  {
+    const rows = filterEligibleForMatching(
+      [po({ source: "bundle_extracted", invoice_id: null, bundle_id: "bundle-1" })],
+      { bundleId: "bundle-1" }
+    );
+    check("18. bundle_extracted with null invoice_id excluded", rows.length === 0, rows);
+  }
+
+  // 19. bundle_extracted row with invoice_id set but no matcher bundle context excluded
+  //     (the old single-PDF/CSV pipeline never passes bundleId)
+  {
+    const rows = filterEligibleForMatching([
+      po({ source: "bundle_extracted", invoice_id: "inv-1", bundle_id: "bundle-1" }),
+    ]);
+    check("19. bundle_extracted row excluded with no matcher bundle context", rows.length === 0, rows);
+  }
+
+  // 20. bundle_extracted row with invoice_id set but a DIFFERENT bundle_id excluded
+  {
+    const rows = filterEligibleForMatching(
+      [po({ source: "bundle_extracted", invoice_id: "inv-1", bundle_id: "bundle-1" })],
+      { bundleId: "bundle-2" }
+    );
+    check("20. bundle_extracted row excluded for a different bundle_id", rows.length === 0, rows);
+  }
+
+  // 21. bundle_extracted row with invoice_id set and matching bundle_id included —
+  //     usable by ANY invoice in the same bundle, not just the one that claimed it
+  {
+    const rows = filterEligibleForMatching(
+      [po({ source: "bundle_extracted", invoice_id: "some-other-invoice", bundle_id: "bundle-1" })],
+      { bundleId: "bundle-1" }
+    );
+    check("21. bundle_extracted row included for matching bundle_id", rows.length === 1, rows);
+  }
+
+  // 22. non-bundle_extracted rows always pass through regardless of context
+  {
+    const rows = filterEligibleForMatching([po({ source: "manual" })]);
+    check("22. manual-source row always eligible", rows.length === 1, rows);
   }
 
   console.log(failures === 0 ? "\nALL THREE-WAY MATCH TEST SCENARIOS PASSED! 🎉" : `\n${failures} SCENARIO(S) FAILED`);
