@@ -1,10 +1,12 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { SUPABASE_CLIENT } from "../../database/supabase.client.js";
 import type {
+  Bundle,
   Database,
   GoodsReceiptNote,
   Invoice,
   InvoiceAuditLog,
+  Organization,
   PaymentRun,
   PurchaseOrder
 } from "../types/database.js";
@@ -13,6 +15,9 @@ type InvoiceInsert = Database["public"]["Tables"]["invoices"]["Insert"];
 type InvoiceUpdate = Database["public"]["Tables"]["invoices"]["Update"];
 type AuditInsert = Database["public"]["Tables"]["invoice_audit_log"]["Insert"];
 type PaymentRunInsert = Database["public"]["Tables"]["payment_runs"]["Insert"];
+type BundleInsert = Database["public"]["Tables"]["bundles"]["Insert"];
+type PurchaseOrderInsert = Database["public"]["Tables"]["purchase_orders"]["Insert"];
+type GoodsReceiptNoteInsert = Database["public"]["Tables"]["goods_receipt_notes"]["Insert"];
 
 export interface PaymentQueueFilters {
   sortBy: "due_date" | "vendor_name" | "amount";
@@ -442,6 +447,111 @@ export class AccountsPayableRepository {
       .select("payment_run_id, status")
       .eq("org_id", orgId)
       .in("payment_run_id", paymentRunIds);
+
+    return unwrap(data, error);
+  }
+
+  // ── Bundle extraction v2 (Phase 1) ────────────────────────────────────────
+
+  async getOrganization(orgId: string): Promise<Organization | null> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("organizations")
+      .select("*")
+      .eq("id", orgId)
+      .maybeSingle();
+
+    return unwrap(data, error);
+  }
+
+  async findBundleByFileHash(orgId: string, fileHash: string): Promise<Bundle | null> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("bundles")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("file_hash", fileHash)
+      .maybeSingle();
+
+    return unwrap(data, error);
+  }
+
+  async createBundle(orgId: string, bundle: Omit<BundleInsert, "org_id">): Promise<Bundle> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("bundles")
+      .insert({ ...bundle, org_id: orgId })
+      .select("*")
+      .single();
+
+    return unwrap(data, error);
+  }
+
+  async getPurchaseOrderByNumber(orgId: string, poNumber: string): Promise<PurchaseOrder | null> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("purchase_orders")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("po_number", poNumber)
+      .maybeSingle();
+
+    return unwrap(data, error);
+  }
+
+  async getGoodsReceiptNoteByNumber(orgId: string, grnNumber: string): Promise<GoodsReceiptNote | null> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("goods_receipt_notes")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("grn_number", grnNumber)
+      .maybeSingle();
+
+    return unwrap(data, error);
+  }
+
+  // Caller (BundleAssemblyService) has already decided this write is safe —
+  // either no row exists for this po_number, or the existing one is itself
+  // bundle_extracted (refining the same evidence). Never call this when a
+  // higher-trust row (manual/csv_import/erp_sync) already exists.
+  async upsertBundlePurchaseOrder(orgId: string, po: Omit<PurchaseOrderInsert, "org_id">): Promise<PurchaseOrder> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("purchase_orders")
+      .upsert({ ...po, org_id: orgId, source: "bundle_extracted" }, { onConflict: "org_id,po_number" })
+      .select("*")
+      .single();
+
+    return unwrap(data, error);
+  }
+
+  async upsertBundleGoodsReceiptNote(orgId: string, grn: Omit<GoodsReceiptNoteInsert, "org_id">): Promise<GoodsReceiptNote> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("goods_receipt_notes")
+      .upsert({ ...grn, org_id: orgId, source: "bundle_extracted" }, { onConflict: "org_id,grn_number" })
+      .select("*")
+      .single();
+
+    return unwrap(data, error);
+  }
+
+  async listInvoicesByBundle(orgId: string, bundleId: string): Promise<Invoice[]> {
+    requireOrgId(orgId);
+
+    const { data, error } = await this.supabase
+      .from("invoices")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("bundle_id", bundleId);
 
     return unwrap(data, error);
   }

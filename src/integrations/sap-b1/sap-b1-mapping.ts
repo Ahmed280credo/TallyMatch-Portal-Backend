@@ -32,6 +32,9 @@ export function mapPurchaseOrderToInternal(po: PurchaseOrder): InternalPurchaseO
     erp_type: "sap_b1",
     erp_doc_entry: po.DocEntry,
     erp_doc_num: po.DocNum,
+    bundle_id: null,
+    invoice_id: null,
+    is_superseded: false,
     created_at: po.DocDate,
   };
 }
@@ -56,6 +59,9 @@ export function mapPurchaseDeliveryNoteToInternal(grn: PurchaseDeliveryNote, poB
     erp_type: "sap_b1",
     erp_doc_entry: grn.DocEntry,
     erp_doc_num: grn.DocNum,
+    bundle_id: null,
+    invoice_id: null,
+    is_superseded: false,
     created_at: grn.DocDate,
   };
 }
