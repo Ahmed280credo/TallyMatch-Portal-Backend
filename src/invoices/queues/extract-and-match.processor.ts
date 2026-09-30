@@ -9,6 +9,7 @@ import { GeminiExtractionService } from "../services/gemini-extraction.service.j
 import { PdfTextService } from "../services/pdf-text.service.js";
 import { AccountsPayableRepository } from "../services/accounts-payable.repository.js";
 import { ThreeWayMatchingService } from "../services/three-way-matching.service.js";
+import { BundleAssemblyService } from "../services/bundle/bundle-assembly.service.js";
 import { EXTRACT_AND_MATCH_QUEUE } from "./invoice-queue.constants.js";
 
 const JobSchema = z.object({
@@ -33,7 +34,8 @@ export class ExtractAndMatchProcessor extends WorkerHost {
     private readonly matcher: ThreeWayMatchingService,
     private readonly audit: AuditLogService,
     private readonly fbrCompliance: FbrComplianceService,
-    private readonly pdfText: PdfTextService
+    private readonly pdfText: PdfTextService,
+    private readonly bundleAssembly: BundleAssemblyService
   ) {
     super();
   }
@@ -41,6 +43,36 @@ export class ExtractAndMatchProcessor extends WorkerHost {
   async process(job: Job<ExtractAndMatchJobData>) {
     const data = JobSchema.parse(job.data);
     const orgId = data.orgId;
+
+    // Bundle extraction v2 (Phase 1) — per-org opt-in. Everything below this
+    // block is the original single-invoice pipeline, unchanged, and stays
+    // the path for every org until explicitly flagged in.
+    const org = await this.repository.getOrganization(orgId).catch(() => null);
+    if (org?.extraction_v2_enabled) {
+      try {
+        const result = await this.bundleAssembly.processBundle(
+          orgId,
+          data.sourceFileName,
+          Buffer.from(data.documentBase64, "base64"),
+          data.uploadedByUserId
+        );
+        return { status: "bundle_processed", ...result };
+      } catch (error) {
+        this.logger.error("bundle extraction v2 failed", error instanceof Error ? error.stack : undefined);
+        try {
+          await this.audit.write({
+            orgId,
+            event: "EXTRACTION_FAILED",
+            status: "failed",
+            notes: error instanceof Error ? error.message : "Unknown bundle extraction failure.",
+            metadata: { job_id: job.id, source_file_name: data.sourceFileName, extraction_v2: true }
+          });
+        } catch (auditErr) {
+          this.logger.error(`[AUDIT LOG FAILED] ${auditErr instanceof Error ? auditErr.message : JSON.stringify(auditErr)}`);
+        }
+        throw error;
+      }
+    }
 
     try {
       const text =
@@ -50,7 +82,9 @@ export class ExtractAndMatchProcessor extends WorkerHost {
       const extracted = text
         ? await this.extractor.extractFromPdfText(text)
         : await this.extractor.extractFromPdfBase64(data.documentBase64);
-      const duplicate = await this.repository.findInvoiceByNumber(orgId, extracted.invoice_number);
+      // Vendor-scoped: two different vendors legitimately share invoice
+      // numbers (e.g. both using "INV-001") — that's not a duplicate.
+      const duplicate = await this.repository.findInvoiceByNumber(orgId, extracted.invoice_number, extracted.vendor_name);
 
       if (duplicate) {
         await this.audit.write({

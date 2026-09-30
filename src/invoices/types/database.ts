@@ -36,8 +36,84 @@ export interface InvoiceLineItem {
 
 export type ErpPushStatus = "not_pushed" | "pushed" | "failed";
 export type PaymentSource = "manual" | "erp_sync";
-export type RecordSource = "manual" | "csv_import" | "erp_sync";
+// 'bundle_extracted' = pulled from a paper bundle upload (Phase 1) rather than
+// typed manually, CSV-imported, or synced live from an ERP. Precedence for
+// matching/insertion purposes is erp_sync > manual/csv_import > bundle_extracted
+// — see BundleAssemblyService.
+export type RecordSource = "manual" | "csv_import" | "erp_sync" | "bundle_extracted";
 export type ErpConnectionStatus = "connected" | "disconnected" | "error";
+
+// ── Bundle extraction v2 (Phase 1) ──────────────────────────────────────────
+// Structured finding emitted during extraction or matching. Non-breaking:
+// mismatch_reasons/pending_reasons (inside match_result) stay populated from
+// finding messages so the existing frontend needs no change yet. Codes
+// actually produced in Phase 1 (extraction-time, all REVIEW or INFO —
+// nothing in this phase can BLOCK, since amount/qty variance detection stays
+// in the unchanged Phase-2-owned ThreeWayMatchingService): MISSING_PO,
+// MISSING_GRN, MISSING_SUPPLIER_TAX_ID, DATE_ANOMALY, LOW_CONFIDENCE,
+// EVIDENCE_MISMATCH, DUPLICATE_ITEM_CODE, DOC_MISMATCH,
+// VISION_TEXT_MISMATCH, LINE_MATH_MISMATCH. PRICE_VARIANCE, QTY_OVER_RECEIPT,
+// PARTIAL_RECEIPT, DAMAGE_NOTE, and TAX_ID_MISMATCH belong to the Phase 2
+// matching engine.
+export type FindingSeverity = "BLOCK" | "REVIEW" | "INFO";
+export type FindingCode =
+  | "PRICE_VARIANCE"
+  | "QTY_OVER_RECEIPT"
+  | "PARTIAL_RECEIPT"
+  | "DAMAGE_NOTE"
+  | "MISSING_PO"
+  | "MISSING_GRN"
+  | "TAX_ID_MISMATCH"
+  | "MISSING_SUPPLIER_TAX_ID"
+  | "DUPLICATE_ITEM_CODE"
+  | "DATE_ANOMALY"
+  | "DOC_MISMATCH"
+  | "EVIDENCE_MISMATCH"
+  | "LOW_CONFIDENCE"
+  // Added in Phase 1, not in the original spec list — needed for the
+  // vision-vs-text-layer cross-check and the server-side line-math recompute
+  // the spec explicitly asks for.
+  | "VISION_TEXT_MISMATCH"
+  | "LINE_MATH_MISMATCH";
+
+export interface Finding {
+  code: FindingCode;
+  severity: FindingSeverity;
+  message: string;
+  line_ref?: string | null;
+  evidence?: Json;
+}
+
+export type PageType = "invoice" | "cash_memo" | "po" | "delivery_note" | "grn" | "blank" | "other";
+
+export interface PageClassification {
+  page_index: number;
+  page_type: PageType;
+  document_number: string | null;
+  confidence: number;
+}
+
+export interface Bundle {
+  id: string;
+  org_id: string;
+  source_file_name: string | null;
+  file_hash: string;
+  page_count: number | null;
+  page_classification: PageClassification[] | null;
+  extraction_mode: "erp" | "paper_only";
+  prompt_version: string | null;
+  model_name: string | null;
+  raw_gemini_response: Json | null;
+  created_at: string;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  extraction_v2_enabled: boolean;
+  created_at: string;
+}
 
 export interface Invoice {
   id: string;
@@ -83,6 +159,11 @@ export interface Invoice {
   erp_pushed_at: string | null;
   payment_source: PaymentSource | null;
   erp_last_synced_at: string | null;
+  // Bundle extraction v2 (Phase 1) — null/empty for single-PDF and
+  // CSV-imported invoices, unchanged this phase.
+  bundle_id: string | null;
+  extraction_metadata: Json | null;
+  findings: Finding[];
   created_at: string;
   updated_at: string;
 }
@@ -108,6 +189,12 @@ export interface PurchaseOrder {
   erp_type: string | null;
   erp_doc_entry: number | null;
   erp_doc_num: number | null;
+  // Bundle extraction v2 (Phase 1). is_superseded is schema-only this phase —
+  // nothing sets it to true yet (that happens when ERP sync later brings the
+  // same document; out of scope here, see the migration's comment).
+  bundle_id: string | null;
+  invoice_id: string | null;
+  is_superseded: boolean;
   created_at: string;
 }
 
@@ -124,6 +211,9 @@ export interface GoodsReceiptNote {
   erp_type: string | null;
   erp_doc_entry: number | null;
   erp_doc_num: number | null;
+  bundle_id: string | null;
+  invoice_id: string | null;
+  is_superseded: boolean;
   created_at: string;
 }
 
@@ -230,6 +320,18 @@ export interface Database {
         Insert: Partial<Omit<ErpConnection, "id" | "created_at" | "updated_at">> &
           Pick<ErpConnection, "org_id" | "base_url" | "username" | "password_encrypted">;
         Update: Partial<Omit<ErpConnection, "id" | "org_id" | "created_at">>;
+        Relationships: [];
+      };
+      bundles: {
+        Row: Bundle;
+        Insert: Partial<Omit<Bundle, "id" | "created_at">> & Pick<Bundle, "org_id" | "file_hash">;
+        Update: Partial<Omit<Bundle, "id" | "org_id" | "created_at">>;
+        Relationships: [];
+      };
+      organizations: {
+        Row: Organization;
+        Insert: Partial<Omit<Organization, "id" | "created_at">> & Pick<Organization, "name" | "slug">;
+        Update: Partial<Omit<Organization, "id" | "created_at">>;
         Relationships: [];
       };
     };

@@ -49,6 +49,9 @@ function po(overrides: Partial<PurchaseOrder> = {}): PurchaseOrder {
     erp_type: null,
     erp_doc_entry: null,
     erp_doc_num: null,
+    bundle_id: null,
+    invoice_id: null,
+    is_superseded: false,
     created_at: new Date().toISOString(),
     ...overrides,
   };
@@ -71,6 +74,9 @@ function grn(overrides: Partial<GoodsReceiptNote> = {}): GoodsReceiptNote {
     erp_type: null,
     erp_doc_entry: null,
     erp_doc_num: null,
+    bundle_id: null,
+    invoice_id: null,
+    is_superseded: false,
     created_at: new Date().toISOString(),
     ...overrides,
   };
